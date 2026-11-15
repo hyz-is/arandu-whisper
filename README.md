@@ -2,332 +2,215 @@
   <img src=".github/logo.svg" alt="Arandu" width="180">
 </p>
 
-<!-- configure:template-start -->
-# Arandu package skeleton
+# Whisper for Arandu
 
-A GitHub template for writing an Arandu package. Clone it, run one command, and
-you have a module that compiles, tests, and is already wired the way the
-framework requires.
+Speech to text on your own server. A voice note goes in, text comes out, and
+nothing leaves the machine: it runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+the open source port of OpenAI's Whisper, so there is no per-minute cost and no
+audio sent to a third party.
 
-## Use it
+It is a thin layer over three programs you install. `ffprobe` and `ffmpeg` read
+whatever audio arrived (a WhatsApp voice note is Ogg Opus) and make a 16 kHz
+mono WAV; `whisper-cli` from whisper.cpp reads that WAV. This package adds what
+an application otherwise writes every time:
 
-Press **Use this template** on GitHub, clone what it makes, and run:
+- a configuration refused at boot, so a missing binary or model fails at the
+  first restart and not on the first voice note;
+- limits on size, duration and time, with a timeout that kills the running
+  process;
+- a private temporary directory per call, removed on every path;
+- errors that carry the exit status and a short summary, never what was said;
+- the `Transcriber` interface, with a `Fake`, so the code that transcribes is
+  tested without the programs or a model.
 
-```bash
-go run ./configure.go
-```
+It owns no table, no route and no policy, and it does not import the framework:
+an application on any framework version installs it. It has no third-party
+dependency.
 
-It asks five questions, shows what it will replace, rewrites every file, renames
-the files and directories whose names carried a template value, formats the Go
-it touched, removes this section, and deletes itself. Then:
+## Requirements
 
-```bash
-aru model:build && go build ./... && go test ./...
-```
-
-A pipeline answers the same questions with flags:
-
-```bash
-go run ./configure.go --non-interactive \
-  --module-path github.com/acme/arandu-widget \
-  --module-slug widget \
-  --package-name Widget \
-  --author-name "Acme" \
-  --author-username acme
-```
-
-Running it twice is refused rather than done: once the placeholders are gone
-there is nothing left to replace, and a second pass would rewrite whatever now
-happens to match.
-
-## What it replaces
-
-| placeholder | becomes | where it appears |
-| --- | --- | --- |
-| `:module_path` | `github.com/acme/arandu-widget` | `go.mod`, the import in every test, this file, `CONTRIBUTING.md`, `SECURITY.md` |
-| `:module_slug` | `widget` | the package clause, `Name()`, every action name, the table name, `arandu.mod.toml`, this file |
-| `:package_name` | `Widget` | this file, `CHANGELOG.md`, `SECURITY.md` |
-| `:author_name` | `Acme` | `LICENSE.md`, this file |
-| `:author_username` | `acme` | `arandu.mod.toml`, this file |
-| `Skeleton` | `Widget` | the entity, its generated query, the policy and the service |
-
-The replacement runs over the contents of every file **and over the names of
-files and directories**. `SkeletonQuery.go`, the query `aru model:build`
-generates from `model.go`, comes out as `WidgetQuery.go` holding `Widgets`,
-`WidgetQuery` and `WidgetCollection` — the declarations the generator writes for
-a `Widget` entity, and it compiles as it comes out. The generator breaks a line
-by its length, so a name of another length lays one or two of them out
-differently, and `aru model:build --check` calls the renamed file stale until
-`aru model:build` has written it once; that run changes the layout and no
-declaration. One name in this tree is read as data:
-`.agents/skills/skeleton-package/SKILL.md` declares `name: skeleton-package` in
-its own frontmatter, and a tool that reads the two and finds them different
-skips the skill. Renaming the contents alone would ship a package carrying a
-skill nothing loads, and no gate would say so.
-
-The Go sources and `go.mod` carry the values rather than the `:placeholder`
-spelling, because a module path with a colon in it is not a module path and a
-package clause with one is not Go. That is what lets the four gates below pass
-before this command has ever run: a template that only compiles after being
-configured is a template whose breakage is discovered by its first user.
-
-## The four gates
-
-```bash
-export GOWORK=off
-gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
-go build ./...
-go vet ./...
-go test -race ./...
-```
-
-CI runs them twice: once on the template, and once on a clean clone that has
-been configured. A skeleton that passes before configuring and breaks after is
-worse than none.
-
-`SkeletonQuery.go` is generated, so a change to the entity in `model.go` is
-followed by `aru model:build`, and `aru model:build --check` exits 1 when the
-committed file is missing, stale or edited by hand. It needs the `aru` binary,
-which is why it sits beside the four gates rather than among them.
-
-## One thing that is only true before you configure
-
-`arandu.mod.toml` declares `filesystem = false`, and `configure.go` reads and
-writes files. That is not a contradiction in the package: `configure.go` opens
-with a build tag, so the compiler never puts it in the module, and it deletes
-itself before anything is published. The capability audit in
-`tests/Unit/audit_test.go` asks the build constraint for exactly this reason and
-leaves it out — a file the compiler never reads is not part of what the package
-does — so it passes here as it does afterwards. Any other file you exclude by a
-tag is left out on the same terms.
-
-<!-- configure:template-end -->
-# :package_name
-
-An Arandu package. It registers its own routes, owns its own table, and decides
-for itself who may reach either.
+| what | notes |
+| --- | --- |
+| whisper.cpp | the `whisper-cli` program, built from a release |
+| a ggml model | for example `ggml-small.bin`, see below |
+| ffmpeg and ffprobe | any recent build; the two programs ship together |
 
 ## Install
 
 ```bash
-go get :module_path
+go get github.com/hyz-is/arandu-whisper@<latest tag>   # gh release list -R hyz-is/arandu-whisper
 ```
+
+### Get whisper.cpp
+
+Build `whisper-cli` from a release of <https://github.com/ggml-org/whisper.cpp>:
+
+```bash
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp
+cd whisper.cpp
+cmake -B build -DBUILD_SHARED_LIBS=OFF
+cmake --build build -j --config Release
+# the program: build/bin/whisper-cli
+```
+
+`-DBUILD_SHARED_LIBS=OFF` links the libraries into the program, so
+`whisper-cli` is one file you can copy. The flags `-m`, `-f`, `-l`, `-oj`,
+`-otxt`, `-of`, `-np`, `-t` and `--prompt`, which this package uses, are the
+ones documented in whisper.cpp's command-line example when this package was
+written; run `whisper-cli --help` and `go test -run TestRealWhisper` after
+upgrading whisper.cpp.
+
+### Get a model
+
+Models are single files from the official repository on Hugging Face:
+
+```bash
+curl -L -o ggml-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+```
+
+Use the multilingual models (no `.en` in the name): the `.en` ones know only
+English. For Brazilian Portuguese on a CPU:
+
+| model | file | disk | memory | when |
+| --- | --- | --- | --- | --- |
+| `base` | `ggml-base.bin` | 142 MiB | about 390 MB | fastest usable; misses technical words and noisy rooms |
+| `small` | `ggml-small.bin` | 466 MiB | about 850 MB | **the recommended start**: a good balance for voice notes |
+| `small` quantized | `ggml-small-q5_1.bin` | about 180 MiB | less than `small` | nearly the quality of `small` in less memory |
+| `medium` | `ggml-medium.bin` | 1.5 GiB | about 2.1 GB | clearly better on accents and noise, several times slower |
+
+Disk and memory are the figures whisper.cpp publishes for each model. Speed
+depends on the CPU, so measure it: transcribe a real two-minute note on the
+server with `whisper-cli -m ggml-small.bin -f note.wav -l pt` and set `Timeout`
+to a few times the time you see. Transcription is CPU bound and uses `Threads`
+cores for its whole duration, so decide how many calls may run at once (a
+buffered channel is enough) instead of letting every incoming message start one.
 
 ## Wire it
 
-An Arandu application registers a module explicitly. There is no service
-provider, no container and no discovery, so these are the lines to paste into
-`bootstrap/app.go` and there are no others.
-
-The import, with the other module imports:
+The paths come from the application's own configuration; this package never
+reads the environment.
 
 ```go
-import (
-	:module_slug ":module_path"
+// bootstrap/app.go
+stt, err := whisper.New(whisper.Config{
+    BinaryPath: cfg.Whisper.Binary, // WHISPER_CLI,   e.g. /usr/local/bin/whisper-cli
+    ModelPath:  cfg.Whisper.Model,  // WHISPER_MODEL, e.g. /var/lib/whisper/ggml-small.bin
+    // FFmpegPath: "ffmpeg",        // the default: looked up in PATH
+    // Language:   "pt",            // the default
+    Threads: 4,
+    Prompt:  "cafeicultura, ferrugem, broca-do-café, adubação, talhão", // optional vocabulary
+})
+if err != nil {
+    return App{}, err
+}
+assistant := services.NewAssistant(db, stt) // takes a whisper.Transcriber
+```
+
+Add `WHISPER_CLI` and `WHISPER_MODEL` to `.env.example`. There is no migration,
+no route and no `k.Register` line.
+
+## Use it
+
+```go
+tr, err := stt.Transcribe(ctx, whisper.Audio{Data: note, MIMEType: "audio/ogg; codecs=opus"})
+switch {
+case errors.Is(err, whisper.ErrEmptyAudio):       // no bytes, or no samples
+case errors.Is(err, whisper.ErrTooLarge):         // over Config.MaxBytes
+case errors.Is(err, whisper.ErrTooLong):          // over Config.MaxDuration
+case errors.Is(err, whisper.ErrUnsupportedAudio): // ffmpeg could not read it
+case errors.Is(err, whisper.ErrTimeout):          // Config.Timeout elapsed; the process was killed
+case errors.Is(err, whisper.ErrFailed):           // whisper-cli failed: errors.As(err, &perr)
+case err != nil:                                  // context cancelled, disk, bad output
+}
+log.Info("transcribed", "language", tr.Language, "seconds", tr.Duration.Seconds())
+// tr.Text is what was said; tr.Segments has each stretch with its start and end.
+```
+
+Silence is not an error: it gives an empty `tr.Text`. Do not log `tr.Text`, the
+audio or a `ProcessError`'s fields beyond what you need: they can carry personal
+data. The package itself never logs.
+
+Do it from a job and not from a request handler: a two-minute note can take a
+while on a CPU.
+
+## Test with it
+
+```go
+fake := whisper.NewFake(
+    whisper.Answer{Text: "apareceu ferrugem no talhão três", Duration: 4 * time.Second},
+    whisper.Answer{Err: whisper.ErrTooLong},
 )
+svc := services.NewAssistant(db, fake)
+// ... exercise svc ...
+fake.Requests()[0].MIMEType // what the service sent
 ```
 
-The construction, in `Build`, after the session store exists and before
-`k.Register`:
+## Config
 
-```go
-	:module_slugModule, err := :module_slug.New(:module_slug.Config{}, db, sessions)
-	if err != nil {
-		return App{}, err
-	}
-```
-
-And the registration, inside the `k.Register(...)` call already there:
-
-```go
-		:module_slugModule,
-```
-
-Then, once, before the application serves:
-
-```bash
-aru migrate
-```
-
-This package owns a table, which is why the migration step is not optional and
-why `arandu.mod.toml` says `migrations = true`.
-
-## Publish the views
-
-This package carries the markup of its own pages and hands it over instead of
-rendering it from the inside, because a page you cannot edit is a page that says
-the wrong thing in your product.
-
-Look at what would be written, then write it:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-```
-
-Nothing is written without `--apply`. The preview lists every file as `create`,
-`update`, `unchanged` or `conflict`, and running the command a second time
-writes nothing. A file changed outside its `arandu:begin custom` markers is
-reported as a conflict and left alone; `--force` publishes over one, and even
-then what is inside the markers is carried forward.
-
-The files land under `resources/views/modules/:module_slug/`, and from that point
-they are yours. Nothing of this package is compiled beside them, so no view name
-is registered twice and no rule has to decide which of two files won — the
-consequence being that a view of this package that changes later does not reach
-a project that already published it.
-
-Two steps are left to you, and they are left to you because a command that
-edited `bootstrap/app.go` behind your back is a command whose output nobody can
-explain. Compile what was written:
-
-```bash
-aru view:build
-```
-
-and import the directory it wrote into, with the other imports:
-
-```go
-	_ "your/module/path/storage/framework/views/modules/:module_slug"
-```
-
-Without that import the views are not in the binary, and the module refuses to
-boot rather than answering the first request that reaches one of them with a
-500. The refusal names the view, the command and the import.
-
-## Configuration
-
-| field | required | meaning |
+| field | default | |
 | --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/:module_slug`. |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200. |
+| `BinaryPath` | required | `whisper-cli`: a path, or a bare name looked up in PATH |
+| `ModelPath` | required | a ggml model file |
+| `FFmpegPath` | `ffmpeg` in PATH | |
+| `FFprobePath` | beside ffmpeg, then PATH | |
+| `Language` | `pt` | a two or three letter code, or `auto` |
+| `Prompt` | none | text that biases spelling toward a vocabulary |
+| `Threads` | whisper's own (the smaller of 4 and the cores) | |
+| `Timeout` | 3 minutes | probe, conversion and whisper together |
+| `MaxDuration` | 5 minutes | longer audio is `ErrTooLong` |
+| `MaxBytes` | 32 MiB | larger input is `ErrTooLarge` |
+| `TempDir` | the system's | where each call makes its private directory |
 
-The zero `Config{}` is a valid configuration. There is no tenant to set: every
-route needs a session, and the tenant of every statement is the one on the
-Grant of whoever is signed in.
+## Docker
 
-`New` returns an error rather than starting half-wired, so a setting that
-cannot work fails where it is written instead of on the first request that
-needed it.
+Compile whisper.cpp in a build stage and copy only the program. `GGML_NATIVE=OFF`
+keeps the build from using the instruction set of the machine that built it, so
+the image also runs on a different CPU. The model is not baked in: mount it as a
+volume or download it at deploy time.
 
-## Routes
+```dockerfile
+FROM debian:bookworm-slim AS whisper
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG WHISPER_CPP_REF=v1.9.5
+RUN git clone --depth 1 --branch "$WHISPER_CPP_REF" https://github.com/ggml-org/whisper.cpp /src
+WORKDIR /src
+RUN cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF \
+    && cmake --build build -j --config Release --target whisper-cli
 
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/:module_slug` | `:module_slug.index` |
-| `GET` | `/:module_slug/{id}` | `:module_slug.show` |
-| `POST` | `/:module_slug` | `:module_slug.store` |
+FROM golang:1.26 AS app
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/app .
 
-Every one of them sits behind `RequireAuth`: a visitor with no session is sent
-to `/auth/login`, and the handler of a request that has one reads who is asking
-with `ctx.User()`. Behind the guard, every route is refused until the policy is
-opened. That is the state the package ships in, and it is deliberate.
-
-A handler returns the error the service returned, and the router answers it: a
-policy refusal is 403, a record that is not there is 404, and a rejected input
-goes back where it came from with the messages in the flash. A request that asks
-for JSON gets the same statuses as `application/problem+json` documents, and a
-rejected input as a 422 with the messages keyed by field. No handler maps an
-error to a status itself.
-
-## Open the policy
-
-`policy.go` denies every action and has no branch that allows one. Open what
-this package needs, one action at a time, inside the custom block:
-
-```go
-	// arandu:begin custom
-	if a == SkeletonView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg libgomp1 libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=whisper /src/build/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=app /out/app /usr/local/bin/app
+ENV WHISPER_CLI=/usr/local/bin/whisper-cli \
+    WHISPER_MODEL=/models/ggml-small.bin
+# docker run -v /srv/models:/models:ro ...
+CMD ["app"]
 ```
 
-What is not written there stays closed, including every action added later.
+The `ffmpeg` package brings `ffprobe` with it.
 
-## The data path
+## Run it against the real thing
 
-`Skeleton` embeds `model.Model`, and `skeletonTable`, beside it in `model.go`,
-declares its table once. `aru model:build` generates `SkeletonQuery.go` from
-it: `Skeletons(db)`, which starts a `*SkeletonQuery`, and `SkeletonCollection`.
-The file is committed and never edited by hand; regenerate it after changing
-the entity, and `aru model:build --check` fails when it is out of date.
-
-`SkeletonService` owns `*data.DB` and follows
-`validate -> security.Authorize -> Grant -> Model terminal`; handlers never hold
-the database or start a query. Every query starts at `Skeletons(s.db)`: the
-constructor returns one mutable query, so a second chain begun from a value held
-in a variable would carry the clauses of the first.
-
-Create builds the row with `Skeletons(s.db).New()` and writes `TenantID` from
-`data.Tenant(g)`. Find authorizes before reading and again against the row it
-found. List authorizes before building its scoped, allowlisted query. The table
-keeps its default `tenant_id` scope on every terminal.
-
-Terminals return `*Skeleton` and `[]*Skeleton`. Keep those pointers: a copy of a
-row keeps the model of the original, and the model refuses to write through it
-with `model.ErrUnwired`. `Resource` and `Collection` are explicit response
-snapshots and do not expose tenant or Model internals.
-
-The rules of the entity itself — an invariant, a derived value, a transition
-such as `Rename` guarded by `CanRename` — go in the custom block of `model.go`,
-as pure methods: no database, no network, no clock read inside, no Grant. The
-service orchestrates: it validates, authorizes, calls those rules and saves
-with the Grant.
-
-There is no CRUD Repository. Add one only for a complex query, read model,
-report, export or raw SQL contract that the generated query cannot express.
-
-## Layout
-
-```
-module.go         registration, routes, handlers and migrations
-config.go         what the application passes in
-model.go          the entity, its table and its own rules, and what it may answer with
-SkeletonQuery.go  the query aru model:build generates from model.go
-policy.go         who may do what
-service.go        the use cases, and Model access after authorization
-views.go          the files the application takes ownership of
-```
-
-## What is already correct, and has to stay that way
-
-**The policy denies everything.** There is no permit-all branch to delete
-later. The Service calls `security.Authorize` before its first `Skeletons(db)`
-reach, and every Model terminal requires the Grant that call produced.
-
-**Authorization precedes the Model.** The package audit checks that order in
-every exported Service method. A Model terminal enforces tenant scope; the
-preceding Policy call decides whether the action itself is allowed.
-
-**The tenant comes from `data.Tenant(g)`.** Never from the path, the body, the
-query string or a header. The value on the Grant came from the session; a value
-that arrived with the request is a value the caller chose.
-
-**Who is asking comes from the guard.** `RequireAuth` loads the session once and
-puts the subject on the request; nothing in the module loads it again.
-
-**`arandu.mod.toml` declares what the package does** — network, filesystem,
-exec, migrations — and the suite compares the declaration against what the code
-*calls*, not against what it imports: `net/http` is imported by everything with
-a route and says nothing. A package that says it makes no outbound calls and
-then opens one fails its own tests, and that is the only place the comparison
-happens. `aru doctor` audits the application it is run inside and never loads a
-dependency, so nothing audits an installed package except the package itself.
-
-## Tests
+The tests never need whisper.cpp. One of them runs the real program when you ask:
 
 ```bash
-go test -race ./...
+WHISPER_CLI=/usr/local/bin/whisper-cli WHISPER_MODEL=/models/ggml-small.bin \
+  go test -run TestRealWhisper -v ./tests/Unit
+# optionally: WHISPER_AUDIO=/path/to/a-recording-with-speech.ogg
 ```
 
-The denial suite constructs the Service with a nil database, so even building
-`Skeletons(nil)` would panic. The structural twin reads the allowed path and
-rejects any Service method that reaches the Model before `Authorize`, and any
-handler that loads the session or picks a status itself. The route tests drive
-the module with no session, with a signed-in subject and with a rejected input,
-on that same handle over no database.
+Without those variables the test skips and says why.
 
-## Licence
+## License
 
-MIT. See [LICENSE.md](LICENSE.md). Copyright :author_name.
+MIT. See [LICENSE.md](LICENSE.md).

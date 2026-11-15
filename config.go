@@ -1,98 +1,243 @@
-package skeleton
+package whisper
 
 import (
+	"errors"
 	"fmt"
-	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
 )
 
-// The defaults for the optional settings. They are constants rather than
-// literals inside Config.withDefaults, so the value a reader finds here is the
-// value the package uses.
+// The values New applies when Config leaves a field at its zero value.
 const (
-	// DefaultPrefix is where the routes are mounted when Config leaves Prefix
-	// empty.
-	DefaultPrefix = "/skeleton"
-	// DefaultPageSize is how many records one page answers with when Config
-	// leaves PageSize at zero.
-	DefaultPageSize = 25
-	// MaxPageSize is the ceiling PageSize is refused above. A page nobody
-	// bounded is a page that reads the whole table on the day the table is
-	// large.
-	MaxPageSize = 200
+	// DefaultLanguage is the spoken language assumed when Config.Language is
+	// empty: Brazilian Portuguese.
+	DefaultLanguage = "pt"
+	// DefaultTimeout bounds one Transcribe call, conversion included.
+	DefaultTimeout = 3 * time.Minute
+	// DefaultMaxDuration is the longest audio Transcribe accepts.
+	DefaultMaxDuration = 5 * time.Minute
+	// DefaultMaxBytes is the largest input Transcribe accepts, in bytes.
+	DefaultMaxBytes int64 = 32 << 20
 )
 
-// Config is what the application passes when it wires this package.
-//
-// A typed struct rather than a map: a misspelled key in a map is a setting that
-// silently keeps its default, and the failure shows up as behaviour nobody
-// asked for rather than as an error. Here a field that does not exist does not
-// compile.
-//
-// It names no tenant, and that is deliberate. Every route sits behind
-// RequireAuth, so the tenant of every statement is the one the Grant carries,
-// from the session of whoever is asking; a tenant written here would be a
-// second place for one to come from. The zero value is a valid configuration.
+var languagePattern = regexp.MustCompile(`^(auto|[a-z]{2,3})$`)
+
+// Config is what the application passes when it builds the client. Every path
+// is checked by New, so a wrong deployment fails at boot and not on the first
+// voice note. This package never reads the environment: the application reads
+// it and passes the values here.
 type Config struct {
-	// Prefix is the path the routes are mounted under. Empty means
-	// DefaultPrefix.
-	Prefix string
-
-	// PageSize is how many records one page answers with. Zero means
-	// DefaultPageSize, and anything above MaxPageSize is refused rather than
-	// clamped: a number somebody wrote and did not get is worse than a number
-	// somebody wrote and was told about.
-	PageSize int
+	// BinaryPath is the whisper.cpp command-line program ("whisper-cli"): an
+	// absolute path, a relative one, or a bare name looked up in PATH.
+	// Required.
+	BinaryPath string
+	// ModelPath is a ggml model file, for example "ggml-small.bin". Required.
+	ModelPath string
+	// FFmpegPath is the ffmpeg program used to convert the audio to WAV. Empty
+	// means "ffmpeg" in PATH.
+	FFmpegPath string
+	// FFprobePath is the ffprobe program used to read the duration before
+	// converting. Empty means the one that sits beside FFmpegPath, then
+	// "ffprobe" in PATH.
+	FFprobePath string
+	// Language is the spoken language as a two or three letter code ("pt",
+	// "en"), or "auto" to let whisper detect it. Empty means DefaultLanguage.
+	Language string
+	// Prompt is optional text whisper reads before the audio, to bias its
+	// spelling toward a vocabulary (product names, technical terms). It is
+	// passed as one argument, never through a shell.
+	Prompt string
+	// Threads is how many CPU threads whisper uses. Zero leaves whisper's own
+	// default, which is the smaller of 4 and the number of cores.
+	Threads int
+	// Timeout bounds one Transcribe call: probe, conversion and whisper
+	// together. Zero means DefaultTimeout.
+	Timeout time.Duration
+	// MaxDuration is the longest audio accepted; longer audio is refused with
+	// ErrTooLong before whisper runs. Zero means DefaultMaxDuration.
+	MaxDuration time.Duration
+	// MaxBytes is the largest input accepted; larger input is refused with
+	// ErrTooLarge before anything is written to disk. Zero means
+	// DefaultMaxBytes.
+	MaxBytes int64
+	// TempDir is the directory under which each call makes its own private
+	// working directory, removed when the call returns. Empty means the
+	// system's temporary directory.
+	TempDir string
 }
 
-// Validate reports what the configuration cannot be used with.
-//
-// It is called by New, so an application with a setting that cannot work fails
-// where it is wired rather than on the first request that needed it.
-func (c Config) Validate() error {
-	if c.Prefix != "" && c.Prefix[0] != '/' {
-		return fmt.Errorf("skeleton: Config.Prefix is %q and has to start with /", c.Prefix)
+// Client runs whisper.cpp on the audio it is given. It is safe for concurrent
+// use; every call works in its own directory. Transcription is CPU bound, so
+// the application decides how many calls may run at once.
+type Client struct {
+	binary      string
+	model       string
+	ffmpeg      string
+	ffprobe     string
+	language    string
+	prompt      string
+	threads     int
+	timeout     time.Duration
+	maxDuration time.Duration
+	maxBytes    int64
+	tempDir     string
+}
+
+var _ Transcriber = (*Client)(nil)
+
+// New validates cfg and returns a client. It refuses a program or model that
+// is missing or is not a regular file, a program that is not executable, an
+// empty model, an unrecognized language, a negative number, and a TempDir
+// that is not a directory. Nothing is started here: the programs are only
+// looked at, not run.
+func New(cfg Config) (*Client, error) {
+	binary, err := resolveProgram(cfg.BinaryPath)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: BinaryPath: %w", err)
 	}
-	if c.Prefix != "" {
-		if err := validateRoutePrefix(c.Prefix); err != nil {
-			return err
+
+	model, err := resolveFile(cfg.ModelPath)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: ModelPath: %w", err)
+	}
+
+	ffmpegName := cfg.FFmpegPath
+	if ffmpegName == "" {
+		ffmpegName = "ffmpeg"
+	}
+	ffmpeg, err := resolveProgram(ffmpegName)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: FFmpegPath: %w", err)
+	}
+
+	ffprobe, err := resolveFFprobe(cfg.FFprobePath, ffmpeg)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: FFprobePath: %w", err)
+	}
+
+	language := strings.ToLower(strings.TrimSpace(cfg.Language))
+	if language == "" {
+		language = DefaultLanguage
+	}
+	if !languagePattern.MatchString(language) {
+		return nil, fmt.Errorf("whisper: Language %q is neither \"auto\" nor a two or three letter code", cfg.Language)
+	}
+
+	if cfg.Threads < 0 {
+		return nil, errors.New("whisper: Threads must not be negative")
+	}
+	if cfg.Timeout < 0 {
+		return nil, errors.New("whisper: Timeout must not be negative")
+	}
+	if cfg.MaxDuration < 0 {
+		return nil, errors.New("whisper: MaxDuration must not be negative")
+	}
+	if cfg.MaxBytes < 0 {
+		return nil, errors.New("whisper: MaxBytes must not be negative")
+	}
+
+	tempDir := cfg.TempDir
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	tempDir, err = filepath.Abs(tempDir)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: TempDir: %w", err)
+	}
+	info, err := os.Stat(tempDir)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: TempDir: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("whisper: TempDir %q is not a directory", tempDir)
+	}
+
+	c := &Client{
+		binary:      binary,
+		model:       model,
+		ffmpeg:      ffmpeg,
+		ffprobe:     ffprobe,
+		language:    language,
+		prompt:      cfg.Prompt,
+		threads:     cfg.Threads,
+		timeout:     cfg.Timeout,
+		maxDuration: cfg.MaxDuration,
+		maxBytes:    cfg.MaxBytes,
+		tempDir:     tempDir,
+	}
+	if c.timeout == 0 {
+		c.timeout = DefaultTimeout
+	}
+	if c.maxDuration == 0 {
+		c.maxDuration = DefaultMaxDuration
+	}
+	if c.maxBytes == 0 {
+		c.maxBytes = DefaultMaxBytes
+	}
+	return c, nil
+}
+
+// resolveProgram turns a path or a bare name into the absolute path of an
+// executable regular file.
+func resolveProgram(name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("is required")
+	}
+	if !strings.ContainsRune(name, filepath.Separator) {
+		found, err := exec.LookPath(name)
+		if err != nil {
+			return "", fmt.Errorf("%q was not found in PATH", name)
 		}
+		name = found
 	}
-	if c.PageSize < 0 || c.PageSize > MaxPageSize {
-		return fmt.Errorf("skeleton: Config.PageSize is %d, and has to be between 0 and %d, where 0 means %d", c.PageSize, MaxPageSize, DefaultPageSize)
+	path, err := resolveFile(name)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("%q is not executable", path)
+	}
+	return path, nil
 }
 
-// validateRoutePrefix asks the standard library to parse the exact patterns
-// the module will register. Its parser is not exported and reports invalid
-// patterns by panic, so the throwaway mux turns that boot-time panic into the
-// configuration error New promises.
-func validateRoutePrefix(prefix string) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("skeleton: Config.Prefix %q cannot be registered as a route path", prefix)
-		}
-	}()
-
-	handler := http.NotFoundHandler()
-	mux := http.NewServeMux()
-	mux.Handle(http.MethodGet+" "+prefix, handler)
-	mux.Handle(http.MethodGet+" "+prefix+"/{id}", handler)
-	mux.Handle(http.MethodPost+" "+prefix, handler)
-	return nil
+// resolveFile returns the absolute path of a non-empty regular file.
+func resolveFile(name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("is required")
+	}
+	path, err := filepath.Abs(name)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("%q cannot be read: %w", path, errors.Unwrap(err))
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a regular file", path)
+	}
+	if info.Size() == 0 {
+		return "", fmt.Errorf("%q is empty", path)
+	}
+	return path, nil
 }
 
-// withDefaults returns the configuration with the optional fields filled in.
-//
-// It runs after Validate and never before: filling a default in first would
-// hide the value somebody actually wrote from the check that would have refused
-// it.
-func (c Config) withDefaults() Config {
-	if c.Prefix == "" {
-		c.Prefix = DefaultPrefix
+// resolveFFprobe finds ffprobe: the configured path, else the program beside
+// ffmpeg, else PATH.
+func resolveFFprobe(configured, ffmpeg string) (string, error) {
+	if configured != "" {
+		return resolveProgram(configured)
 	}
-	if c.PageSize == 0 {
-		c.PageSize = DefaultPageSize
+	if beside, err := resolveProgram(filepath.Join(filepath.Dir(ffmpeg), "ffprobe")); err == nil {
+		return beside, nil
 	}
-	return c
+	return resolveProgram("ffprobe")
 }

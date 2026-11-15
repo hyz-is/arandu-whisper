@@ -1,5 +1,5 @@
 ---
-name: skeleton-vault-notes
+name: whisper-vault-notes
 description: Write the Obsidian vault notes that record this module, when the checkout sits inside the Arandu vault. Use when the request is to "write the note", "record this in the vault", "update the journal", "open a gap", "document the module", "add it to the index", "the audit is failing", "layer=... is not in the schema", "which folder does this note go in", or when a change to this package closed or opened a defect somebody else has to know about. Covers how to tell you are in the vault, where a module note lives, which layer a defect belongs to, what the day note has to say, and the one instrument that decides whether any of it was written correctly.
 license: MIT
 ---
@@ -48,9 +48,10 @@ the verdict for most of them is *do not build*. A `PKG-` note can describe
 something that will never exist as code. A `MOD-` note cannot: it is written from
 a published repository, so the repository comes first and the note second.
 
-A module here means a first-party Go repository that implements
-`foundation.Module`, is registered explicitly in an application's
-`bootstrap/app.go`, and imports the framework rather than the other way round. It
+A module here means a first-party Go repository that an application wires
+explicitly in its `bootstrap/app.go`. Most implement `foundation.Module` and
+import the framework; this one is a library like `arandu-claude`: it is built
+by hand and passed where it is needed, with no `k.Register` line. It
 lives outside `arandu-io` and is not in the root `go.work`.
 
 ### What the note has to answer
@@ -58,15 +59,18 @@ lives outside `arandu-io` and is not in the root `go.work`.
 Four questions, in this order, because it is the order somebody reads them in:
 
 1. **What the module declares about itself.** Paste `arandu.mod.toml` whole — the
-   permissions especially. It is what `tests/Unit/audit_test.go` compares against
-   what the code actually calls, in this repository — nothing downstream does,
+   permissions especially. It is what `tests/Unit/manifest_test.go` compares against
+   what the code actually imports, in this repository — nothing downstream does,
    because `aru doctor` reads the application's own tree and never opens an
    installed package.
 2. **How an application wires it.** The typed construction and the explicit
    registration. Never a service provider, a container or discovery — writing
    those into a note is how the next reader builds one.
-3. **What it requires of the core.** The framework and hesape floors, from
-   `go.mod`, matching the `framework = ">= x.y"` line in the manifest.
+3. **What it requires of the core.** This package imports no framework and has
+   no `require` in `go.mod`; the `framework = ">= x.y"` line in the manifest is
+   only the floor for the application that installs it. It also requires three
+   programs on the server: whisper.cpp's `whisper-cli`, `ffmpeg` and `ffprobe`,
+   and a ggml model file.
 4. **What has already broken in it.** The `GAP-` notes whose `layer:` is this
    module.
 

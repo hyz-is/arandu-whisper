@@ -18,46 +18,31 @@ The two filters on `gofmt` are not preference. `gofmt` is the only tool in the
 chain that ignores build tags, so it reads files the compiler deliberately
 excludes; `testdata/` holds fixtures that are invalid on purpose.
 
-A change to the entity in `model.go` is followed by `aru model:build`, which
-rewrites `SkeletonQuery.go`, and the regenerated file goes in the same commit.
-`aru model:build --check` exits 1 when the committed file is missing, stale or
-edited by hand.
+The suite does not need whisper.cpp, a model or ffmpeg: it runs stand-in
+programs it writes itself. If you have the real ones, also run
+
+```bash
+WHISPER_CLI=/path/to/whisper-cli WHISPER_MODEL=/path/to/ggml-small.bin \
+  go test -run TestRealWhisper -v ./tests/Unit
+```
 
 ## What a change has to keep true
 
-Four properties are the reason this package is what it is. A change that breaks
-one of them will not be merged, whatever else it improves.
+A change that breaks one of these will not be merged, whatever else it improves.
 
-1. **The policy denies by default.** No branch allows every action, and none is
-   added. Opening an action means writing the rule that opens it.
-2. **Every Service method authorizes before reaching the Model.** The Grant is
-   then required by the Model terminal; constructing `Skeletons(db)` first is
-   already the wrong order and the structural audit rejects it.
-3. **The tenant comes from `data.Tenant(g)`.** Not from the path, the body, the
-   query string or a header, on any code path, including the read paths.
-4. **`arandu.mod.toml` matches the code.** Adding an outbound call, a file
-   write or a process means declaring it there in the same commit.
-
-CRUD stays on `Skeletons(db)` and its generated query. Add a Repository only for
-a specialized complex query, read model, report, export or raw SQL contract; a
-wrapper around `Find`, `Get`, `Save` or `Delete` is a second data path.
-
-Every query starts at `Skeletons(s.db)`. The constructor returns one mutable
-query, so a second chain begun from a value held in a variable carries the
-clauses of the first -- and that compiles.
-
-Model-backed entities stay pointers. A copy of `Skeleton` keeps the model of the
-row it was copied from, and the model refuses to write through the copy with
-`model.ErrUnwired`. Response resources are the deliberate snapshot boundary;
-Service results are not.
-
-The rules of the entity itself go in the custom block of `model.go`, as pure
-methods. The Service orchestrates, and holds no rule the entity could hold.
-
-Handlers read who is asking with `ctx.User()`, which `RequireAuth` filled, and
-return the error the Service returned for the router to answer. A handler that
-loads the session or maps an error to a status fails
-`TestHandlersLeaveTheSubjectAndTheStatusToTheFramework`.
+1. **No shell.** Programs are started with `exec.CommandContext` and fixed
+   arguments; nothing a caller supplies is ever joined into a command line.
+2. **Nothing said leaks.** The transcript goes to standard output, which is
+   discarded; errors carry only an exit status and a short, truncated summary of
+   standard error. No log line, no error and no file outlives the call with
+   content from the audio.
+3. **The call cleans up.** Its private directory is removed on every path,
+   timeout and cancellation included.
+4. **`arandu.mod.toml` matches the code.** Adding a network call, a dependency
+   on the framework or another program means declaring it there in the same
+   commit; `tests/Unit/manifest_test.go` says when it does not.
+5. **A test never needs the real program.** Use the stand-in scripts or the
+   `Fake`.
 
 ## Style
 
@@ -83,4 +68,4 @@ Do not open an issue. See [SECURITY.md](SECURITY.md).
 ## Licence
 
 By contributing you agree that your contribution is licensed under the MIT
-licence, the same as the rest of :module_path.
+licence, the same as the rest of github.com/hyz-is/arandu-whisper.
