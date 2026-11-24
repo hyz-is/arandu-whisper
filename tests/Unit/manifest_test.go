@@ -12,7 +12,7 @@ import (
 
 // TestTheManifestMatchesWhatThePackageDoes holds arandu.mod.toml against the
 // code. This package starts programs (exec) and writes a private temporary
-// directory (filesystem), and makes no network call, owns no table and does not
+// directory (filesystem), and uses the network only when a Handler, a Remote or a ServerURL is configured, owns no table and does not
 // import the framework. `aru doctor` audits an application's own tree and never
 // loads an installed package, so this suite is the only place the declaration is
 // checked.
