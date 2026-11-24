@@ -24,7 +24,7 @@ func TestTheManifestMatchesWhatThePackageDoes(t *testing.T) {
 	manifest := string(raw)
 
 	want := map[string]string{
-		"network":    "false",
+		"network":    "true",
 		"filesystem": "true",
 		"exec":       "true",
 		"migrations": "false",
@@ -44,12 +44,12 @@ func TestTheManifestMatchesWhatThePackageDoes(t *testing.T) {
 		t.Error(`arandu.mod.toml must name the package "hyz-is/whisper"`)
 	}
 
-	// The sources behind the declaration: no network, no framework.
+	// The sources behind the declaration: no database, no framework.
 	files, err := filepath.Glob("../../*.go")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no sources found: %v", err)
 	}
-	forbidden := []string{"net", "net/http", "database/sql", "github.com/arandu-io/"}
+	forbidden := []string{"database/sql", "github.com/arandu-io/"}
 	for _, file := range files {
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
 		if err != nil {

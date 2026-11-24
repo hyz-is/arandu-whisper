@@ -3,6 +3,7 @@ package whisper
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,10 +34,19 @@ var languagePattern = regexp.MustCompile(`^(auto|[a-z]{2,3})$`)
 type Config struct {
 	// BinaryPath is the whisper.cpp command-line program ("whisper-cli"): an
 	// absolute path, a relative one, or a bare name looked up in PATH.
-	// Required.
+	// Required, unless ServerURL is set.
 	BinaryPath string
-	// ModelPath is a ggml model file, for example "ggml-small.bin". Required.
+	// ModelPath is a ggml model file, for example "ggml-small.bin". Required,
+	// unless ServerURL is set (the server holds the model).
 	ModelPath string
+	// ServerURL, when set, sends the converted audio to a resident
+	// whisper.cpp "whisper-server" (its /inference endpoint) instead of
+	// starting whisper-cli for every call. The server loads the model once,
+	// which is what makes a GPU worth having: whisper-cli would load the model
+	// again on every call. The conversion, the limits and the cleanup stay
+	// here; BinaryPath and ModelPath are then ignored. An http or https URL,
+	// such as "http://127.0.0.1:8080".
+	ServerURL string
 	// FFmpegPath is the ffmpeg program used to convert the audio to WAV. Empty
 	// means "ffmpeg" in PATH.
 	FFmpegPath string
@@ -76,6 +86,7 @@ type Config struct {
 type Client struct {
 	binary      string
 	model       string
+	server      string
 	ffmpeg      string
 	ffprobe     string
 	language    string
@@ -95,14 +106,22 @@ var _ Transcriber = (*Client)(nil)
 // that is not a directory. Nothing is started here: the programs are only
 // looked at, not run.
 func New(cfg Config) (*Client, error) {
-	binary, err := resolveProgram(cfg.BinaryPath)
-	if err != nil {
-		return nil, fmt.Errorf("whisper: BinaryPath: %w", err)
-	}
-
-	model, err := resolveFile(cfg.ModelPath)
-	if err != nil {
-		return nil, fmt.Errorf("whisper: ModelPath: %w", err)
+	var binary, model, server string
+	var err error
+	if strings.TrimSpace(cfg.ServerURL) != "" {
+		server, err = resolveServerURL(cfg.ServerURL)
+		if err != nil {
+			return nil, fmt.Errorf("whisper: ServerURL: %w", err)
+		}
+	} else {
+		binary, err = resolveProgram(cfg.BinaryPath)
+		if err != nil {
+			return nil, fmt.Errorf("whisper: BinaryPath: %w", err)
+		}
+		model, err = resolveFile(cfg.ModelPath)
+		if err != nil {
+			return nil, fmt.Errorf("whisper: ModelPath: %w", err)
+		}
 	}
 
 	ffmpegName := cfg.FFmpegPath
@@ -159,6 +178,7 @@ func New(cfg Config) (*Client, error) {
 	c := &Client{
 		binary:      binary,
 		model:       model,
+		server:      server,
 		ffmpeg:      ffmpeg,
 		ffprobe:     ffprobe,
 		language:    language,
@@ -179,6 +199,22 @@ func New(cfg Config) (*Client, error) {
 		c.maxBytes = DefaultMaxBytes
 	}
 	return c, nil
+}
+
+// resolveServerURL checks the address of a whisper-server: an http or https
+// URL with a host, and nothing that could carry a credential or a query.
+func resolveServerURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("is not a URL")
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("must be an http or https URL with a host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("must not carry credentials, a query or a fragment")
+	}
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // resolveProgram turns a path or a bare name into the absolute path of an

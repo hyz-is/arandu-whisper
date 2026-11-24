@@ -177,11 +177,15 @@ func (c *Client) Transcribe(ctx context.Context, audio Audio) (Transcript, error
 		return Transcript{}, tooLong(duration, c.maxDuration)
 	}
 
-	base := filepath.Join(dir, "out")
-	if err := c.recognize(ctx, dir, wav, base); err != nil {
-		return Transcript{}, err
+	var result Transcript
+	if c.server != "" {
+		result, err = c.recognizeOnServer(ctx, wav)
+	} else {
+		base := filepath.Join(dir, "out")
+		if err = c.recognize(ctx, dir, wav, base); err == nil {
+			result, err = readOutput(base, c.language)
+		}
 	}
-	result, err := readOutput(base, c.language)
 	if err != nil {
 		return Transcript{}, err
 	}
