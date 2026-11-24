@@ -8,9 +8,12 @@ framework = ">= 0.50"
 profiles = ["conventional", "performance"]
 
 [permissions]
-# Transcription runs on the application's own server. Nothing leaves the process
-# by the network: no audio, no text, no telemetry.
-network = false
+# Transcription runs on the application's own server by default and then nothing
+# leaves the process by the network. The network is used only when the
+# application asks for it: Config.ServerURL posts the converted audio to a
+# whisper.cpp server it names, Handler serves audio sent to it, and Remote posts
+# audio to the nodes it was given. No telemetry, and no address but those.
+network = true
 # Each call writes the audio and the converted WAV to a private temporary
 # directory (Config.TempDir), reads whisper's output from it, and removes it
 # before returning. It also reads the configured model file.

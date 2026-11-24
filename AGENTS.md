@@ -29,7 +29,11 @@ not list it.
 | --- | --- |
 | `whisper.go` | `Audio`, `Transcript`, `Segment`, `Transcriber`, `Transcribe`, the errors and `ProcessError` |
 | `config.go` | `Config`, its defaults, `New` and the validation of every path |
+| `resident.go` | `Config.ServerURL`: the recognition goes to a resident whisper.cpp `whisper-server` (`/inference`, `verbose_json`) |
+| `handler.go` | `Handler`: `POST` audio, JSON transcript, bearer tokens per client, body and concurrency limits, the wire error codes |
+| `remote.go` | `Remote`, `ParseNodes`, `Health`: a `Transcriber` over several nodes with failover and a cooldown |
 | `fake.go` | `Fake`, the scripted `Transcriber` for an application's tests |
+| `tests/Unit/service_test.go` | the handler, the remote (rotation, failover, cooldown, health), the resident server against stand-ins |
 | `tests/Unit/whisper_test.go` | the client against stand-in `ffprobe`, `ffmpeg` and `whisper-cli` scripts, against the real ffmpeg when present, against the real whisper.cpp when `WHISPER_CLI` and `WHISPER_MODEL` are set, and the fake |
 | `tests/Unit/manifest_test.go` | `arandu.mod.toml` held against the imports |
 

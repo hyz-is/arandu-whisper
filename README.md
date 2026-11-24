@@ -146,12 +146,84 @@ svc := services.NewAssistant(db, fake)
 fake.Requests()[0].MIMEType // what the service sent
 ```
 
+## As a service
+
+Transcription can run on a server of its own, on a GPU, and be called over HTTP
+by the applications that need it. Three pieces, all optional:
+
+**1. A resident model.** `whisper-cli` loads the model on every call, which on a
+GPU costs more than the transcription itself. Run whisper.cpp's `whisper-server`
+once, next to the application, and point `Config.ServerURL` at it:
+
+```bash
+whisper-server -m ggml-large-v3-turbo-q5_0.bin --host 127.0.0.1 --port 8080 -l pt -t 2
+```
+
+```go
+stt, err := whisper.New(whisper.Config{ServerURL: "http://127.0.0.1:8080", Language: "pt"})
+```
+
+The conversion with ffmpeg, the limits, the timeout and the cleanup stay in this
+package; only the recognition goes to the server. `BinaryPath` and `ModelPath`
+are not needed. The server answers one transcription at a time, so keep
+`MaxConcurrent` of the handler small.
+
+**2. A handler.** `NewHandler` serves any `Transcriber` over HTTP:
+
+```go
+h, err := whisper.NewHandler(whisper.HandlerConfig{
+    Transcriber:   stt,
+    Tokens:        map[string]string{"corujao": os.Getenv("VOICE_TOKEN_CORUJAO")}, // a client per token
+    MaxConcurrent: 2,                 // the rest wait QueueWait, then get 429
+    MaxBytes:      16 << 20,
+    Logger:        slog.Default(),    // client, status, size, time: never the audio or the text
+})
+mux.Handle("/transcribe", h)
+```
+
+`POST /transcribe` with `Authorization: Bearer <token>`, the audio as the body and
+its MIME type as `Content-Type`. The answer is JSON:
+`{"text": "...", "language": "pt", "duration_ms": 10000, "segments": [{"start_ms": 0, "end_ms": 2500, "text": "..."}]}`.
+Errors are `{"error": code, "message": text}` with `400 empty_audio`,
+`401 unauthorized`, `413 too_large`, `422 too_long` or `unsupported_audio`,
+`429 busy` (with `Retry-After`), `502 failed` or `bad_output` and `504 timeout`.
+Tokens have at least 32 characters, are compared in constant time and never
+logged. Nothing is written by the handler, and the transcriber's private
+directory is removed before the call returns.
+
+**3. A remote client.** `NewRemote` is a `Transcriber` that calls one or more
+nodes running the handler, so the application chooses local or remote by
+configuration and the code that transcribes does not change:
+
+```go
+var stt whisper.Transcriber
+if nodes := cfg.Voice.Nodes; nodes != "" {            // VOICE_API_NODES=one=https://voz1.example,two=https://voz2.example
+    list, err := whisper.ParseNodes(nodes)
+    if err != nil { return App{}, err }
+    stt, err = whisper.NewRemote(whisper.RemoteConfig{Nodes: list, Token: cfg.Voice.Token})
+    if err != nil { return App{}, err }
+} else {
+    stt, err = whisper.New(whisper.Config{BinaryPath: cfg.Whisper.Binary, ModelPath: cfg.Whisper.Model})
+    if err != nil { return App{}, err }
+}
+```
+
+Calls go to the nodes in turn. A node that is busy (429), unreachable, timed out
+or failing is skipped at once and the next one is tried; after
+`FailureThreshold` failures in a row (3) it leaves the rotation for `Cooldown`
+(30 s), and when every node is out they are all tried as a last resort. A refusal
+another node would repeat (empty, too large, too long or unreadable audio, a
+wrong token) is returned as it is, as the same `errors.Is` sentinel the local
+client returns. `Remote.Health(ctx)` asks every node's `/_arandu/health` and says
+which are in the rotation: use it for a status page, not on the request path.
+
 ## Config
 
 | field | default | |
 | --- | --- | --- |
 | `BinaryPath` | required | `whisper-cli`: a path, or a bare name looked up in PATH |
 | `ModelPath` | required | a ggml model file |
+| `ServerURL` | none | a resident `whisper-server`; replaces `BinaryPath` and `ModelPath` |
 | `FFmpegPath` | `ffmpeg` in PATH | |
 | `FFprobePath` | beside ffmpeg, then PATH | |
 | `Language` | `pt` | a two or three letter code, or `auto` |
