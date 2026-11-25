@@ -10,6 +10,12 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-25
+
+### Added
+
+- `RemoteConfig.BusyWait` (default `DefaultBusyWait`, 5 seconds): when every node answered 429, the round is repeated, with a pause that grows from 200 ms to 1 s, until a node frees or `BusyWait` is over, and only then does the call fail with `ErrNoNodes`. A burst of more calls than the nodes take at once waits its turn instead of failing. A negative value restores the old behaviour. A node that fails (not busy) is still not waited for.
+
 ## [0.2.0] - 2026-11-24
 
 ### Added

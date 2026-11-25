@@ -28,7 +28,17 @@ const (
 	DefaultRemotePath = "/transcribe"
 	// DefaultHealthPath is the health endpoint Remote.Health reads.
 	DefaultHealthPath = "/_arandu/health"
+	// DefaultBusyWait is how long a call keeps trying when every node answered
+	// busy.
+	DefaultBusyWait = 5 * time.Second
+	// busyBackoff is the first pause between two rounds over busy nodes; it
+	// doubles up to maxBusyBackoff.
+	busyBackoff    = 200 * time.Millisecond
+	maxBusyBackoff = time.Second
 )
+
+// errNodeBusy marks a node's 429: it is working at its limit, not unwell.
+var errNodeBusy = errors.New("busy")
 
 // ErrNoNodes means every node was tried and none answered.
 var ErrNoNodes = errors.New("whisper: no node answered")
@@ -86,6 +96,13 @@ type RemoteConfig struct {
 	// MaxBytes is the largest audio sent, refused here before any network.
 	// Zero means DefaultMaxBytes.
 	MaxBytes int64
+	// BusyWait is how long a call keeps going round the nodes when every one of
+	// them answered 429 (busy, not failing): each round waits a little longer,
+	// up to BusyWait in all, and the call fails with ErrNoNodes only after it. A
+	// burst of calls than the nodes can take at once then waits its turn instead
+	// of failing. Zero means DefaultBusyWait; a negative value turns the wait off
+	// and a call fails as soon as one round found every node busy.
+	BusyWait time.Duration
 	// HTTPClient carries the calls. Nil means a client with a pooled transport
 	// and no timeout of its own (Timeout ends each attempt).
 	HTTPClient *http.Client
@@ -103,6 +120,7 @@ type Remote struct {
 	threshold  int
 	cooldown   time.Duration
 	maxBytes   int64
+	busyWait   time.Duration
 	http       *http.Client
 	next       atomic.Uint64
 	now        func() time.Time
@@ -139,6 +157,7 @@ func NewRemote(cfg RemoteConfig) (*Remote, error) {
 		threshold:  cfg.FailureThreshold,
 		cooldown:   cfg.Cooldown,
 		maxBytes:   cfg.MaxBytes,
+		busyWait:   cfg.BusyWait,
 		http:       cfg.HTTPClient,
 		now:        time.Now,
 	}
@@ -173,6 +192,9 @@ func NewRemote(cfg RemoteConfig) (*Remote, error) {
 	if r.maxBytes == 0 {
 		r.maxBytes = DefaultMaxBytes
 	}
+	if r.busyWait == 0 {
+		r.busyWait = DefaultBusyWait
+	}
 	if r.http == nil {
 		r.http = &http.Client{Transport: &http.Transport{
 			MaxIdleConnsPerHost: 4,
@@ -196,22 +218,42 @@ func (r *Remote) Transcribe(ctx context.Context, audio Audio) (Transcript, error
 	if int64(len(audio.Data)) > r.maxBytes {
 		return Transcript{}, fmt.Errorf("%w: %d bytes, the limit is %d", ErrTooLarge, len(audio.Data), r.maxBytes)
 	}
-	var last error
-	for _, n := range r.order() {
-		if err := ctx.Err(); err != nil {
-			return Transcript{}, err
+	deadline := time.Now().Add(r.busyWait)
+	pause := busyBackoff
+	for {
+		var last error
+		allBusy := true
+		for _, n := range r.order() {
+			if err := ctx.Err(); err != nil {
+				return Transcript{}, err
+			}
+			tr, retry, err := r.call(ctx, n, audio)
+			if err == nil {
+				n.succeed()
+				return tr, nil
+			}
+			if !retry {
+				return Transcript{}, err
+			}
+			if !errors.Is(err, errNodeBusy) {
+				allBusy = false
+			}
+			last = err
 		}
-		tr, retry, err := r.call(ctx, n, audio)
-		if err == nil {
-			n.succeed()
-			return tr, nil
+		// Only a round in which every node was busy is worth another: a node
+		// that failed was already skipped for the next call, and waiting does
+		// not mend it.
+		remaining := time.Until(deadline)
+		if !allBusy || r.busyWait < 0 || remaining <= 0 {
+			return Transcript{}, fmt.Errorf("%w: %w", ErrNoNodes, last)
 		}
-		if !retry {
-			return Transcript{}, err
+		select {
+		case <-time.After(min(pause, remaining)):
+		case <-ctx.Done():
+			return Transcript{}, ctx.Err()
 		}
-		last = err
+		pause = min(pause*2, maxBusyBackoff)
 	}
-	return Transcript{}, fmt.Errorf("%w: %w", ErrNoNodes, last)
 }
 
 // order lists the nodes to try: the ones in the rotation starting at the next
@@ -321,7 +363,7 @@ func (r *Remote) call(ctx context.Context, n *remoteNode, audio Audio) (Transcri
 	case codeBusy:
 		// Busy is not sick: skip the node for this call and leave it in the
 		// rotation.
-		return Transcript{}, true, fmt.Errorf("whisper: node %s is busy", n.Name)
+		return Transcript{}, true, fmt.Errorf("whisper: node %s is %w", n.Name, errNodeBusy)
 	case codeCanceled:
 		return Transcript{}, false, context.Canceled
 	case codeTimeout:

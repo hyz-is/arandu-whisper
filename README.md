@@ -214,7 +214,7 @@ or failing is skipped at once and the next one is tried; after
 (30 s), and when every node is out they are all tried as a last resort. A refusal
 another node would repeat (empty, too large, too long or unreadable audio, a
 wrong token) is returned as it is, as the same `errors.Is` sentinel the local
-client returns. `Remote.Health(ctx)` asks every node's `/_arandu/health` and says
+client returns. When every node answers 429 the round is repeated for up to `BusyWait` (5 s) before the call fails. `Remote.Health(ctx)` asks every node's `/_arandu/health` and says
 which are in the rotation: use it for a status page, not on the request path.
 
 ## Config
