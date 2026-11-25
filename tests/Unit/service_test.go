@@ -608,9 +608,9 @@ func TestRemoteGivesUpAfterBusyWaitAndCanBeToldNotToWait(t *testing.T) {
 	}
 }
 
-func TestRemoteDoesNotWaitForANodeThatFails(t *testing.T) {
+func TestRemoteDoesNotWaitWhenNoNodeIsBusy(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
-	a.set("busy")
+	a.set("fail")
 	b.set("fail")
 	start := time.Now()
 	_, err := remote(t, func(c *whisper.RemoteConfig) { c.BusyWait = 3 * time.Second }, a, b).Transcribe(context.Background(), sample)
@@ -627,6 +627,18 @@ func TestRemoteTheWaitStopsWithTheCallersContext(t *testing.T) {
 	start := time.Now()
 	_, err := remote(t, func(c *whisper.RemoteConfig) { c.BusyWait = time.Minute }, a).Transcribe(ctx, sample)
 	if err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("%v after %s", err, time.Since(start))
+	}
+}
+
+func TestRemoteStillWaitsForABusyNodeWhenAnotherIsDown(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	a.set("busy")
+	b.set("fail")
+	r := remote(t, func(c *whisper.RemoteConfig) { c.BusyWait = 3 * time.Second; c.FailureThreshold = 1 }, a, b)
+	go func() { time.Sleep(300 * time.Millisecond); a.set("ok") }()
+	start := time.Now()
+	if _, err := r.Transcribe(context.Background(), sample); err != nil || time.Since(start) < 200*time.Millisecond {
 		t.Fatalf("%v after %s", err, time.Since(start))
 	}
 }

@@ -10,6 +10,12 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-25
+
+### Fixed
+
+- `Remote` did not wait for `BusyWait` when a node of the round had failed (a node that was stopped, for instance) beside the busy ones: it gave up at once with `ErrNoNodes` although the busy node would free in a moment. It now repeats the round when at least one node was busy, whatever the others did; a round of failures alone is still not waited for.
+
 ## [0.2.1] - 2026-11-25
 
 ### Added
