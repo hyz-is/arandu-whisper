@@ -10,7 +10,9 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
-## [0.2.2] - 2026-11-25
+## [0.2.3] - 2026-11-25
+
+v0.2.2 was tagged on the commit of v0.2.1 by mistake and carries nothing new; the change below is in v0.2.3 and later.
 
 ### Fixed
 
