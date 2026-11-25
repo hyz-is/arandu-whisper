@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.2
+
+Nothing to change.
+
 ## 0.2.1
 
 Nothing to change. `Remote` now waits up to `BusyWait` (5 seconds) when every node is busy, where it used to fail at once; set `BusyWait: -1` to keep the old behaviour.

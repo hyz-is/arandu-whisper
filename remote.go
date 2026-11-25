@@ -96,8 +96,8 @@ type RemoteConfig struct {
 	// MaxBytes is the largest audio sent, refused here before any network.
 	// Zero means DefaultMaxBytes.
 	MaxBytes int64
-	// BusyWait is how long a call keeps going round the nodes when every one of
-	// them answered 429 (busy, not failing): each round waits a little longer,
+	// BusyWait is how long a call keeps going round the nodes when no node could take it and at
+	// least one answered 429 (busy, not failing): each round waits a little longer,
 	// up to BusyWait in all, and the call fails with ErrNoNodes only after it. A
 	// burst of calls than the nodes can take at once then waits its turn instead
 	// of failing. Zero means DefaultBusyWait; a negative value turns the wait off
@@ -222,7 +222,7 @@ func (r *Remote) Transcribe(ctx context.Context, audio Audio) (Transcript, error
 	pause := busyBackoff
 	for {
 		var last error
-		allBusy := true
+		anyBusy := false
 		for _, n := range r.order() {
 			if err := ctx.Err(); err != nil {
 				return Transcript{}, err
@@ -235,16 +235,17 @@ func (r *Remote) Transcribe(ctx context.Context, audio Audio) (Transcript, error
 			if !retry {
 				return Transcript{}, err
 			}
-			if !errors.Is(err, errNodeBusy) {
-				allBusy = false
+			if errors.Is(err, errNodeBusy) {
+				anyBusy = true
 			}
 			last = err
 		}
-		// Only a round in which every node was busy is worth another: a node
-		// that failed was already skipped for the next call, and waiting does
-		// not mend it.
+		// A round in which some node was busy is worth another, whatever the
+		// others did: a busy node frees, while a node that failed was already
+		// skipped for the next call and waiting does not mend it. A round of
+		// failures alone is not waited for.
 		remaining := time.Until(deadline)
-		if !allBusy || r.busyWait < 0 || remaining <= 0 {
+		if !anyBusy || r.busyWait < 0 || remaining <= 0 {
 			return Transcript{}, fmt.Errorf("%w: %w", ErrNoNodes, last)
 		}
 		select {
